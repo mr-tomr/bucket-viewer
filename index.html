@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bucket Viewer</title>
+<style>
+:root{--bg:#0e1116;--panel:#171b22;--panel2:#1d232c;--text:#e8edf3;--muted:#9ca8b5;--line:#2b3440;--accent:#72a7ff;--bad:#ff7b72;--good:#7ee787}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:17px 20px;background:var(--panel);border-bottom:1px solid var(--line)} h1{margin:0;font-size:20px}.sub{color:var(--muted);margin-top:4px}
+.toolbar{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:12px 16px;background:var(--panel2);border-bottom:1px solid var(--line)}
+input,button{font:inherit} input{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#0c0f14;color:var(--text)}
+button,.btn{padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:#252c36;color:var(--text);cursor:pointer;text-decoration:none;display:inline-block}
+button:hover,.btn:hover{border-color:var(--accent)}
+main{display:grid;grid-template-columns:390px 1fr;height:calc(100vh - 123px)}
+aside{overflow:auto;background:var(--panel);border-right:1px solid var(--line)} section{overflow:auto;padding:18px}
+.status{padding:10px 13px;border-bottom:1px solid var(--line);color:var(--muted)}.provider{padding:8px 13px;border-bottom:1px solid var(--line)}
+.tree{padding:8px}.row{display:flex;gap:7px;align-items:center;padding:5px 7px;border-radius:6px;cursor:pointer}.row:hover{background:#232a34}.row.active{background:#27354d}
+.children{margin-left:18px}.name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.icon{width:17px;text-align:center}
+.meta,.actions{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:13px}.meta{color:var(--muted)}
+pre{white-space:pre-wrap;word-break:break-word;background:#090c10;border:1px solid var(--line);padding:14px;border-radius:8px;max-height:70vh;overflow:auto}
+img{max-width:100%;max-height:72vh;border-radius:8px} iframe{width:100%;height:75vh;border:1px solid var(--line);border-radius:8px;background:white}
+table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}.bad{color:var(--bad)}.good{color:var(--good)}
+code{background:#0b0e13;padding:2px 5px;border-radius:4px}
+@media(max-width:850px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header><h1>Public Bucket Viewer</h1><div class="sub">AWS S3 • Google Cloud Storage • Azure Blob Storage • S3-compatible object storage • CORS browser extension required for cross-origin access</div></header>
+<div class="toolbar">
+<input id="url" placeholder="Paste a public bucket/container URL">
+<button id="load">Detect & Load</button><button id="clear">Clear</button>
+</div>
+<main>
+<aside><div class="status" id="status">Enter a public bucket or container URL.</div><div class="provider" id="provider">Provider: —</div><div class="tree" id="tree"></div></aside>
+<section id="viewer"><h2>Bucket contents</h2><p class="sub">The provider will be detected automatically.</p></section>
+</main>
+<script>
+const $=s=>document.querySelector(s); let state={provider:null,input:"",base:"",objects:[]};
+$("#load").onclick=load; $("#url").onkeydown=e=>{if(e.key==="Enter")load()};
+$("#clear").onclick=()=>{state={provider:null,input:"",base:"",objects:[]};$("#url").value="";$("#tree").innerHTML="";$("#provider").textContent="Provider: —";$("#status").textContent="Enter a public bucket or container URL.";$("#viewer").innerHTML="<h2>Bucket contents</h2><p class='sub'>The provider will be detected automatically.</p>"};
+
+function normalize(s){s=s.trim();if(!/^https?:\/\//i.test(s))s="https://"+s;return s}
+function detect(raw){
+ const u=new URL(normalize(raw)), h=u.hostname.toLowerCase(), p=u.pathname.replace(/^\/|\/$/g,"");
+ if(h==="storage.googleapis.com"){let [bucket,...rest]=p.split("/");return {type:"gcs",name:bucket,prefix:rest.join("/"),base:`${u.protocol}//storage.googleapis.com/${bucket}/`}}
+ if(h.endsWith(".storage.googleapis.com")){let bucket=h.slice(0,-".storage.googleapis.com".length);return {type:"gcs",name:bucket,prefix:p,base:`${u.protocol}//${h}/`}}
+ if(h.endsWith(".blob.core.windows.net")){let [container,...rest]=p.split("/");return {type:"azure",name:container,prefix:rest.join("/"),account:h.split(".")[0],base:`${u.protocol}//${h}/${container}/`}}
+ if(h==="s3.amazonaws.com"){let [bucket,...rest]=p.split("/");return {type:"s3",name:bucket,prefix:rest.join("/"),base:`${u.protocol}//${h}/${bucket}/`}}
+ if(/\.s3[.-][a-z0-9-]+\.amazonaws\.com$/.test(h)||h.endsWith(".s3.amazonaws.com")){let bucket=h.split(".s3")[0];return {type:"s3",name:bucket,prefix:p,base:`${u.protocol}//${h}/`}}
+ if(h.includes(".r2.cloudflarestorage.com")||h.includes("digitaloceanspaces.com")||h.includes("wasabisys.com")||h.includes("backblazeb2.com")||h.includes("linodeobjects.com")) return {type:"s3compat",name:h,prefix:p,base:`${u.protocol}//${h}/`};
+ return {type:"s3compat",name:h,prefix:p,base:`${u.protocol}//${h}/`};
+}
+async function load(){
+ try{
+  const d=detect($("#url").value); state={provider:d,input:$("#url").value,base:d.base,objects:[]};
+  $("#provider").textContent=`Provider: ${label(d.type)}${d.name?" — "+d.name:""}`;$("#status").textContent="Loading…";$("#tree").innerHTML="";
+  if(d.type==="gcs") await listGCS(d); else if(d.type==="azure") await listAzure(d); else await listS3(d);
+  renderTree(state.objects);$("#status").innerHTML=`<span class="good">${state.objects.length.toLocaleString()} objects loaded</span>`;
+ }catch(e){$("#status").innerHTML=`<span class="bad">Load failed: ${esc(e.message)}</span>`;$("#viewer").innerHTML=`<h2>Unable to list</h2><p>The container may allow public object reads but deny anonymous listing, or browser CORS may prevent the request.</p><pre>${esc(String(e))}</pre>`}
+}
+function label(t){return ({s3:"Amazon S3",gcs:"Google Cloud Storage",azure:"Azure Blob Storage",s3compat:"S3-compatible / generic"})[t]||t}
+
+async function listS3(d){
+ let token=null;
+ do{
+  const u=new URL(d.base);u.searchParams.set("list-type","2");u.searchParams.set("max-keys","1000");if(d.prefix)u.searchParams.set("prefix",d.prefix);if(token)u.searchParams.set("continuation-token",token);
+  const r=await fetch(u);if(!r.ok)throw new Error(`HTTP ${r.status} ${r.statusText}`);const txt=await r.text(),x=new DOMParser().parseFromString(txt,"application/xml");
+  const er=x.querySelector("Error");if(er)throw new Error(er.querySelector("Message")?.textContent||"S3 listing error");
+  [...x.querySelectorAll("Contents")].forEach(c=>state.objects.push({key:c.querySelector("Key")?.textContent||"",size:+(c.querySelector("Size")?.textContent||0),modified:c.querySelector("LastModified")?.textContent||"",etag:c.querySelector("ETag")?.textContent||""}));
+  token=x.querySelector("IsTruncated")?.textContent==="true"?(x.querySelector("NextContinuationToken")?.textContent||null):null;$("#status").textContent=`Loaded ${state.objects.length.toLocaleString()}…`;
+ }while(token)
+}
+async function listGCS(d){
+ let token=null;
+ do{
+  const u=new URL(`https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(d.name)}/o`);u.searchParams.set("maxResults","1000");if(d.prefix)u.searchParams.set("prefix",d.prefix);if(token)u.searchParams.set("pageToken",token);
+  const r=await fetch(u);if(!r.ok)throw new Error(`HTTP ${r.status} ${r.statusText}`);const j=await r.json();
+  (j.items||[]).forEach(o=>state.objects.push({key:o.name,size:+(o.size||0),modified:o.updated||o.timeCreated||"",etag:o.etag||"",contentType:o.contentType||""}));
+  token=j.nextPageToken||null;$("#status").textContent=`Loaded ${state.objects.length.toLocaleString()}…`;
+ }while(token)
+}
+async function listAzure(d){
+ let marker="";
+ do{
+  const u=new URL(`${d.base}`);u.searchParams.set("restype","container");u.searchParams.set("comp","list");u.searchParams.set("maxresults","5000");if(d.prefix)u.searchParams.set("prefix",d.prefix);if(marker)u.searchParams.set("marker",marker);
+  const r=await fetch(u);if(!r.ok)throw new Error(`HTTP ${r.status} ${r.statusText}`);const txt=await r.text(),x=new DOMParser().parseFromString(txt,"application/xml");
+  [...x.querySelectorAll("Blob")].forEach(b=>state.objects.push({key:b.querySelector("Name")?.textContent||"",size:+(b.querySelector("Content-Length")?.textContent||0),modified:b.querySelector("Last-Modified")?.textContent||"",etag:b.querySelector("Etag")?.textContent||"",contentType:b.querySelector("Content-Type")?.textContent||""}));
+  marker=x.querySelector("NextMarker")?.textContent||"";$("#status").textContent=`Loaded ${state.objects.length.toLocaleString()}…`;
+ }while(marker)
+}
+function treeData(items){let root={folders:new Map(),files:[]};for(const o of items){let ps=o.key.split("/").filter(Boolean),c=root;ps.forEach((p,i)=>{if(i===ps.length-1&&!o.key.endsWith("/"))c.files.push({...o,name:p});else{if(!c.folders.has(p))c.folders.set(p,{folders:new Map(),files:[]});c=c.folders.get(p)}})}return root}
+function renderTree(items){$("#tree").innerHTML="";$("#tree").appendChild(nodeEl(treeData(items),true))}
+function nodeEl(n,open=false){let w=document.createElement("div");[...n.folders.keys()].sort().forEach(fn=>{let b=document.createElement("div"),r=document.createElement("div"),ch=document.createElement("div");r.className="row";ch.className="children";ch.style.display=open?"block":"none";r.innerHTML=`<span class=icon>${open?"▾":"▸"}</span><span class=name>📁 ${esc(fn)}</span>`;r.onclick=()=>{let o=ch.style.display!=="none";ch.style.display=o?"none":"block";r.querySelector(".icon").textContent=o?"▸":"▾"};ch.appendChild(nodeEl(n.folders.get(fn)));b.append(r,ch);w.appendChild(b)});n.files.sort((a,b)=>a.name.localeCompare(b.name)).forEach(f=>{let r=document.createElement("div");r.className="row";r.innerHTML=`<span class=icon>•</span><span class=name title="${esc(f.key)}">${esc(f.name)}</span>`;r.onclick=()=>{document.querySelectorAll(".row.active").forEach(x=>x.classList.remove("active"));r.classList.add("active");preview(f)};w.appendChild(r)});return w}
+function objUrl(key){return state.base+key.split("/").map(encodeURIComponent).join("/")}
+async function preview(o){
+ const url=objUrl(o.key),ext=(o.key.split(".").pop()||"").toLowerCase(),v=$("#viewer");
+ v.innerHTML=`<h2>${esc(o.key)}</h2><div class=meta><span>${bytes(o.size)}</span><span>${o.modified?new Date(o.modified).toLocaleString():""}</span>${o.contentType?`<span>${esc(o.contentType)}</span>`:""}</div><div class=actions><a class=btn href="${url}" target=_blank rel=noopener>Open raw</a><a class=btn href="${url}" download>Download</a><button id=copy>Copy URL</button></div><div id=p>Loading preview…</div>`;$("#copy").onclick=()=>navigator.clipboard.writeText(url);let p=$("#p");
+ const imgs=["png","jpg","jpeg","gif","webp","svg","bmp","ico","avif"],texts=["txt","log","md","json","jsonl","ndjson","xml","yaml","yml","csv","tsv","ini","conf","cfg","js","jsx","ts","tsx","py","rb","go","rs","java","c","h","cpp","cs","php","sh","bash","zsh","ps1","bat","cmd","html","htm","css","scss","sql","toml","properties","env","pem","crt","cer","csr","pub"];
+ if(imgs.includes(ext)){p.innerHTML=`<img src="${url}">`;return} if(ext==="pdf"){p.innerHTML=`<iframe src="${url}"></iframe>`;return}
+ if(["mp4","webm","ogv","mov"].includes(ext)){p.innerHTML=`<video controls style="max-width:100%" src="${url}"></video>`;return}
+ if(["mp3","wav","ogg","m4a","aac","flac"].includes(ext)){p.innerHTML=`<audio controls src="${url}"></audio>`;return}
+ if(texts.includes(ext)&&o.size<=8*1024*1024){try{let r=await fetch(url);if(!r.ok)throw Error(`HTTP ${r.status}`);let t=await r.text();if(ext==="json")try{t=JSON.stringify(JSON.parse(t),null,2)}catch{}p.innerHTML=`<pre>${esc(t)}</pre>`}catch(e){p.innerHTML=`<p class=bad>Preview failed: ${esc(e.message)}</p>`}return}
+ p.innerHTML=`<p>No safe inline renderer is configured for <code>.${esc(ext||"(none)")}</code>. The object is still available through Open raw or Download.</p>`;
+}
+function bytes(n){if(!n)return"0 B";let u=["B","KB","MB","GB","TB"],i=Math.floor(Math.log(n)/Math.log(1024));return`${(n/1024**i).toFixed(i?1:0)} ${u[i]}`}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+</script>
+</body></html>
