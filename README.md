@@ -6,10 +6,6 @@ Live GitHub Pages site:
 
 https://mr-tomr.github.io/bucket-viewer/
 
-Repository:
-
-https://github.com/mr-tomr/bucket-viewer
-
 ## What it does
 
 Bucket Viewer converts public object-storage listings into a more usable folder-style interface.
